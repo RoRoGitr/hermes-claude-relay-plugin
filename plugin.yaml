@@ -1,0 +1,12 @@
+name: claude-code-relay
+version: 1.0.0
+description: Relay Hermes gateway chats to the official Claude Code CLI with sticky per-chat sessions and model selection.
+provides_tools:
+  - relay_to_claude
+provides_hooks:
+  - pre_gateway_dispatch
+provides_commands:
+  - claude
+  - claudemodel
+  - endclaude
+  - stopclaude

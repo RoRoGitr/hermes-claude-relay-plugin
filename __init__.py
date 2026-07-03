@@ -322,17 +322,17 @@ async def _handle_stopclaude_async(raw_args: str = "") -> str:
         logger.warning("Claude relay stop failed: %s", exc)
         return f"Claude relay stop failed: {exc}"
 
-    entry["active"] = False
-    entry["ended_at"] = datetime.now().isoformat(timespec="seconds")
+    entry["active"] = True
+    entry["stopped_at"] = datetime.now().isoformat(timespec="seconds")
     state[session_key] = entry
     _save_state(state)
 
     if payload.get("stopped"):
         pid = payload.get("pid")
         suffix = f" (pid {pid})" if pid else ""
-        return f"Claude relay process stopped{suffix}. Claude mode ended for this chat."
+        return f"Claude relay process stopped{suffix}. Claude mode is still active — send your next prompt, or use `/endclaude` to exit."
     err = payload.get("error") or "No running Claude relay process for this chat."
-    return f"{err} Claude mode ended for this chat."
+    return f"{err} Claude mode is still active — send your next prompt, or use `/endclaude` to exit."
 
 
 async def _handle_claudemodel_async(raw_args: str = "") -> str:

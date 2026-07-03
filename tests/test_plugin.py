@@ -67,7 +67,7 @@ async def test_claude_relay_persists_session(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_stopclaude_kills_running_process_and_ends_mode(monkeypatch, tmp_path):
+async def test_stopclaude_kills_running_process_and_keeps_mode_active(monkeypatch, tmp_path):
     monkeypatch.setattr(plugin, "_state_path", lambda: tmp_path / "state.json")
     monkeypatch.setattr(plugin, "_session_key", lambda event=None, gateway=None: "telegram:chat:user")
     (tmp_path / "state.json").write_text(json.dumps({"telegram:chat:user": {"active": True, "session_id": "sid-123"}}))
@@ -84,12 +84,13 @@ async def test_stopclaude_kills_running_process_and_ends_mode(monkeypatch, tmp_p
     assert "stopped" in result.lower()
     assert captured["session_key"] == "telegram:chat:user"
     entry = json.loads((tmp_path / "state.json").read_text())["telegram:chat:user"]
-    assert entry["active"] is False
-    assert "ended_at" in entry
+    assert entry["active"] is True
+    assert "stopped_at" in entry
+    assert "ended_at" not in entry
 
 
 @pytest.mark.asyncio
-async def test_stopclaude_ends_mode_when_no_process_running(monkeypatch, tmp_path):
+async def test_stopclaude_keeps_mode_active_when_no_process_running(monkeypatch, tmp_path):
     monkeypatch.setattr(plugin, "_state_path", lambda: tmp_path / "state.json")
     monkeypatch.setattr(plugin, "_session_key", lambda event=None, gateway=None: "telegram:chat:user")
     (tmp_path / "state.json").write_text(json.dumps({"telegram:chat:user": {"active": True, "session_id": "sid-123"}}))
@@ -102,9 +103,9 @@ async def test_stopclaude_ends_mode_when_no_process_running(monkeypatch, tmp_pat
     result = await plugin._handle_stopclaude_async()
 
     assert "No running Claude relay process" in result
-    assert "Claude mode ended" in result
+    assert "Claude mode is still active" in result
     entry = json.loads((tmp_path / "state.json").read_text())["telegram:chat:user"]
-    assert entry["active"] is False
+    assert entry["active"] is True
 
 
 def test_pre_gateway_dispatch_rewrites_plain_text_when_active(monkeypatch, tmp_path):

@@ -11,7 +11,7 @@ This is useful when Hermes itself is running a lightweight model or when Anthrop
 | `/claude <prompt>` | Send a prompt to Claude Code and keep sticky Claude mode active for this chat. |
 | `/claudemodel <model>` | Set the Claude Code model for this chat's relay only. Does **not** change Hermes' own `/model`. |
 | `/endclaude` | Exit sticky Claude mode; future plain messages go back to Hermes. |
-| `/stopclaude` | Stop the currently running Claude Code relay subprocess for this chat, if one is still running. |
+| `/stopclaude` | Stop the currently running Claude Code relay subprocess for this chat, while keeping sticky Claude mode active for the next prompt. |
 
 ## Requirements
 

@@ -67,6 +67,19 @@ async def test_claude_relay_persists_session(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_endclaude_says_not_active_when_mode_already_inactive(monkeypatch, tmp_path):
+    monkeypatch.setattr(plugin, "_state_path", lambda: tmp_path / "state.json")
+    monkeypatch.setattr(plugin, "_session_key", lambda event=None, gateway=None: "telegram:chat:user")
+    (tmp_path / "state.json").write_text(json.dumps({"telegram:chat:user": {"active": False, "session_id": "sid-123"}}))
+
+    result = await plugin._handle_endclaude_async()
+
+    assert "Claude mode is not active" in result
+    data = json.loads((tmp_path / "state.json").read_text())
+    assert data["telegram:chat:user"]["active"] is False
+
+
+@pytest.mark.asyncio
 async def test_stopclaude_kills_running_process_and_keeps_mode_active(monkeypatch, tmp_path):
     monkeypatch.setattr(plugin, "_state_path", lambda: tmp_path / "state.json")
     monkeypatch.setattr(plugin, "_session_key", lambda event=None, gateway=None: "telegram:chat:user")

@@ -302,6 +302,8 @@ async def _handle_endclaude_async(raw_args: str = "") -> str:
     session_key = _session_key()
     state = _load_state()
     entry = dict(state.get(session_key, {}) or {})
+    if not entry.get("active"):
+        return "Claude mode is not active for this chat."
     entry["active"] = False
     entry["ended_at"] = datetime.now().isoformat(timespec="seconds")
     state[session_key] = entry

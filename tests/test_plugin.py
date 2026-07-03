@@ -213,3 +213,53 @@ def test_register_registers_expected_surfaces():
     assert calls["tools"] == ["relay_to_claude"]
     assert calls["hooks"] == ["pre_gateway_dispatch"]
     assert calls["commands"] == ["claude", "claudemodel", "endclaude", "stopclaude"]
+
+
+
+def test_plugin_relay_uses_stream_json_and_records_activity(monkeypatch, tmp_path):
+    import relay
+
+    relay.RUNNING_CLAUDE_PROCS.clear()
+    relay.CLAUDE_RELAY_STATUSES.clear()
+    monkeypatch.setattr(relay, "resolve_claude_binary", lambda: "claude")
+    monkeypatch.setattr(relay, "resolve_workdir", lambda project: str(tmp_path))
+
+    captured = {}
+
+    class FakePipe:
+        def __init__(self, lines):
+            self._lines = list(lines)
+        def readline(self):
+            if self._lines:
+                return self._lines.pop(0)
+            return ""
+
+    class FakeProc:
+        pid = 5432
+        returncode = 0
+        def __init__(self, cmd, **kwargs):
+            captured["cmd"] = cmd
+            self.stdout = FakePipe([
+                json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "Working"}]}}) + "\n",
+                json.dumps({"type": "tool_use", "name": "Bash"}) + "\n",
+                json.dumps({"type": "result", "result": "finished", "session_id": "sid-stream", "num_turns": 2}) + "\n",
+            ])
+            self.stderr = FakePipe([])
+        def poll(self):
+            return None if self.stdout._lines else self.returncode
+        def wait(self, timeout=None):
+            return self.returncode
+
+    monkeypatch.setattr(relay.subprocess, "Popen", FakeProc)
+
+    result = json.loads(relay.relay_to_claude("do work", session_key="session-stream", timeout=30))
+
+    assert "stream-json" in captured["cmd"]
+    assert "--include-partial-messages" in captured["cmd"]
+    assert "--include-hook-events" in captured["cmd"]
+    assert result["success"] is True
+    assert result["result"] == "finished"
+    assert result["last_activity_kind"] == "tool_use"
+    status = relay.get_claude_relay_status("session-stream")
+    assert status["running"] is False
+    assert status["last_activity_kind"] == "tool_use"

@@ -17,6 +17,7 @@ try:
         DEFAULT_TIMEOUT_SECONDS,
         RELAY_TO_CLAUDE_SCHEMA,
         check_requirements,
+        get_claude_relay_status,
         relay_to_claude,
         stop_claude_relay_process,
     )
@@ -25,6 +26,7 @@ except ImportError:  # Allows pytest to import this plugin root as a top-level _
         DEFAULT_TIMEOUT_SECONDS,
         RELAY_TO_CLAUDE_SCHEMA,
         check_requirements,
+        get_claude_relay_status,
         relay_to_claude,
         stop_claude_relay_process,
     )
@@ -35,6 +37,7 @@ _CURRENT_EVENT = None
 _CURRENT_GATEWAY = None
 _PLUGIN_DIR = Path(__file__).resolve().parent
 _CLAUDE_PROGRESS_INTERVAL_SECONDS = 60.0
+_CLAUDE_STALL_WARNING_SECONDS = 600.0
 
 
 def _state_path() -> Path:
@@ -267,6 +270,18 @@ async def _send_claude_progress_ticks(session_key: str, done: asyncio.Event, *, 
         elapsed = max(0.0, asyncio.get_running_loop().time() - started)
         minutes = max(1, int(elapsed // 60) or 1)
         content = f"⏳ Working — {minutes} min — Claude relay running"
+        try:
+            status = get_claude_relay_status(session_key)
+        except Exception:
+            status = {}
+        age = status.get("last_activity_age_s")
+        summary = status.get("last_activity_summary")
+        if isinstance(age, (int, float)):
+            if age >= _CLAUDE_STALL_WARNING_SECONDS:
+                stale_min = max(1, int(age // 60))
+                content = f"⚠️ Claude still alive — {minutes} min — no stream activity for {stale_min} min. Use /stopclaude to kill or wait."
+            elif summary and status.get("last_activity_kind") not in {None, "started"}:
+                content = f"⏳ Working — {minutes} min — Claude relay running — last activity {int(age)}s ago — {summary}"
         try:
             sender = getattr(adapter, "send_or_update_status", None)
             if callable(sender):

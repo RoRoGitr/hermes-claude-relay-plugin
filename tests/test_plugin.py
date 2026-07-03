@@ -2,6 +2,7 @@ import asyncio
 import importlib.util
 import json
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -64,6 +65,49 @@ async def test_claude_relay_persists_session(monkeypatch, tmp_path):
     assert entry["session_id"] == "sid-123"
     assert entry["model"] == "fable"
     assert entry["active"] is True
+
+
+@pytest.mark.asyncio
+async def test_claude_relay_sends_bare_progress_ticks_while_running(monkeypatch, tmp_path):
+    monkeypatch.setattr(plugin, "_state_path", lambda: tmp_path / "state.json")
+    monkeypatch.setattr(plugin, "_session_key", lambda event=None, gateway=None: "telegram:chat:user")
+    monkeypatch.setattr(plugin, "_CLAUDE_PROGRESS_INTERVAL_SECONDS", 0.01)
+
+    class FakeAdapter:
+        def __init__(self):
+            self.statuses = []
+
+        async def send_or_update_status(self, chat_id, status_key, content, metadata=None):
+            self.statuses.append((chat_id, status_key, content, metadata))
+            return SimpleNamespace(success=True, message_id="status-1")
+
+    adapter = FakeAdapter()
+    source = SimpleNamespace(platform="telegram", chat_id="chat", user_id="user")
+    monkeypatch.setattr(plugin, "_CURRENT_EVENT", SimpleNamespace(source=source))
+    monkeypatch.setattr(
+        plugin,
+        "_CURRENT_GATEWAY",
+        SimpleNamespace(
+            adapters={"telegram": adapter},
+            _reply_anchor_for_event=lambda event: None,
+            _thread_metadata_for_source=lambda source, reply_anchor=None: None,
+        ),
+    )
+
+    def fake_relay_to_claude(**kwargs):
+        time.sleep(0.04)
+        return json.dumps({"success": True, "result": "done", "session_id": "sid-123"})
+
+    monkeypatch.setattr(plugin, "relay_to_claude", fake_relay_to_claude)
+
+    result = await plugin._handle_claude_async("long task")
+
+    assert "done" in result
+    assert adapter.statuses
+    chat_id, status_key, content, _metadata = adapter.statuses[-1]
+    assert chat_id == "chat"
+    assert status_key == "claude-relay:telegram:chat:user"
+    assert content == "⏳ Working — 1 min — Claude relay running"
 
 
 @pytest.mark.asyncio

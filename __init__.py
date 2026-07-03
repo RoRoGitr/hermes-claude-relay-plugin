@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 from datetime import datetime
 import json
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 _CURRENT_EVENT = None
 _CURRENT_GATEWAY = None
 _PLUGIN_DIR = Path(__file__).resolve().parent
+_CLAUDE_PROGRESS_INTERVAL_SECONDS = 60.0
 
 
 def _state_path() -> Path:
@@ -227,6 +229,54 @@ def _run_coro_blocking(coro):
     raise RuntimeError("Cannot block an already running event loop; use the async handler path")
 
 
+async def _send_claude_progress_ticks(session_key: str, done: asyncio.Event, *, interval: float | None = None) -> None:
+    """Send/update a bare Claude relay progress tick while Claude Code runs."""
+    interval = _CLAUDE_PROGRESS_INTERVAL_SECONDS if interval is None else interval
+    if interval <= 0:
+        interval = 60.0
+    event = _CURRENT_EVENT
+    gateway = _CURRENT_GATEWAY
+    source = getattr(event, "source", None) if event is not None else None
+    chat_id = getattr(source, "chat_id", None)
+    platform = getattr(source, "platform", None)
+    adapter = None
+    if gateway is not None and hasattr(gateway, "adapters"):
+        try:
+            adapter = gateway.adapters.get(platform)
+        except Exception:
+            adapter = None
+    if adapter is None or not chat_id:
+        return
+
+    metadata = None
+    try:
+        if gateway is not None and hasattr(gateway, "_reply_anchor_for_event") and hasattr(gateway, "_thread_metadata_for_source"):
+            reply_anchor = gateway._reply_anchor_for_event(event)
+            metadata = gateway._thread_metadata_for_source(source, reply_anchor)
+    except Exception:
+        metadata = None
+
+    status_key = f"claude-relay:{session_key}"
+    started = asyncio.get_running_loop().time()
+    while True:
+        try:
+            await asyncio.wait_for(done.wait(), timeout=interval)
+            return
+        except asyncio.TimeoutError:
+            pass
+        elapsed = max(0.0, asyncio.get_running_loop().time() - started)
+        minutes = max(1, int(elapsed // 60) or 1)
+        content = f"⏳ Working — {minutes} min — Claude relay running"
+        try:
+            sender = getattr(adapter, "send_or_update_status", None)
+            if callable(sender):
+                await sender(chat_id, status_key, content, metadata=metadata)
+            else:
+                await adapter.send(chat_id, content, metadata=metadata)
+        except Exception:
+            logger.debug("Failed to send Claude relay progress tick", exc_info=True)
+
+
 async def _handle_claude_async(raw_args: str) -> str:
     args = _parse_claude_args(raw_args)
     if args.get("error"):
@@ -260,7 +310,17 @@ async def _handle_claude_async(raw_args: str) -> str:
         return json.loads(raw) if isinstance(raw, str) else raw
 
     try:
-        payload = await run_relay(resume_session_id)
+        progress_done = asyncio.Event()
+        progress_task = asyncio.create_task(
+            _send_claude_progress_ticks(session_key, progress_done)
+        )
+        try:
+            payload = await run_relay(resume_session_id)
+        finally:
+            progress_done.set()
+            progress_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await progress_task
     except Exception as exc:
         logger.warning("Claude relay failed: %s", exc)
         return f"Claude relay failed: {exc}"

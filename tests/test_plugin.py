@@ -80,6 +80,29 @@ async def test_endclaude_says_not_active_when_mode_already_inactive(monkeypatch,
 
 
 @pytest.mark.asyncio
+async def test_endclaude_kills_running_process_and_deactivates_mode(monkeypatch, tmp_path):
+    monkeypatch.setattr(plugin, "_state_path", lambda: tmp_path / "state.json")
+    monkeypatch.setattr(plugin, "_session_key", lambda event=None, gateway=None: "telegram:chat:user")
+    (tmp_path / "state.json").write_text(json.dumps({"telegram:chat:user": {"active": True, "session_id": "sid-123"}}))
+
+    captured = {}
+    def fake_stop(session_key):
+        captured["session_key"] = session_key
+        return {"success": True, "stopped": True, "pid": 1234}
+
+    monkeypatch.setattr(plugin, "stop_claude_relay_process", fake_stop)
+
+    result = await plugin._handle_endclaude_async()
+
+    assert "Claude relay process stopped" in result
+    assert "Claude mode ended" in result
+    assert captured["session_key"] == "telegram:chat:user"
+    entry = json.loads((tmp_path / "state.json").read_text())["telegram:chat:user"]
+    assert entry["active"] is False
+    assert "ended_at" in entry
+
+
+@pytest.mark.asyncio
 async def test_stopclaude_kills_running_process_and_keeps_mode_active(monkeypatch, tmp_path):
     monkeypatch.setattr(plugin, "_state_path", lambda: tmp_path / "state.json")
     monkeypatch.setattr(plugin, "_session_key", lambda event=None, gateway=None: "telegram:chat:user")

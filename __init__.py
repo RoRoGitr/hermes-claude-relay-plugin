@@ -304,10 +304,21 @@ async def _handle_endclaude_async(raw_args: str = "") -> str:
     entry = dict(state.get(session_key, {}) or {})
     if not entry.get("active"):
         return "Claude mode is not active for this chat."
+    stop_payload = None
+    if entry.get("session_id"):
+        try:
+            stop_payload = stop_claude_relay_process(session_key)
+        except Exception as exc:
+            logger.warning("Claude relay stop during end failed: %s", exc)
+            stop_payload = {"stopped": False, "error": str(exc)}
     entry["active"] = False
     entry["ended_at"] = datetime.now().isoformat(timespec="seconds")
     state[session_key] = entry
     _save_state(state)
+    if isinstance(stop_payload, dict) and stop_payload.get("stopped"):
+        pid = stop_payload.get("pid")
+        suffix = f" (pid {pid})" if pid else ""
+        return f"Claude relay process stopped{suffix}. Claude mode ended. Future plain messages will go to Hermes again."
     return "Claude mode ended. Future plain messages will go to Hermes again."
 
 

@@ -66,6 +66,47 @@ async def test_claude_relay_persists_session(monkeypatch, tmp_path):
     assert entry["active"] is True
 
 
+@pytest.mark.asyncio
+async def test_stopclaude_kills_running_process_and_ends_mode(monkeypatch, tmp_path):
+    monkeypatch.setattr(plugin, "_state_path", lambda: tmp_path / "state.json")
+    monkeypatch.setattr(plugin, "_session_key", lambda event=None, gateway=None: "telegram:chat:user")
+    (tmp_path / "state.json").write_text(json.dumps({"telegram:chat:user": {"active": True, "session_id": "sid-123"}}))
+
+    captured = {}
+    def fake_stop(session_key):
+        captured["session_key"] = session_key
+        return {"success": True, "stopped": True, "pid": 1234}
+
+    monkeypatch.setattr(plugin, "stop_claude_relay_process", fake_stop)
+
+    result = await plugin._handle_stopclaude_async()
+
+    assert "stopped" in result.lower()
+    assert captured["session_key"] == "telegram:chat:user"
+    entry = json.loads((tmp_path / "state.json").read_text())["telegram:chat:user"]
+    assert entry["active"] is False
+    assert "ended_at" in entry
+
+
+@pytest.mark.asyncio
+async def test_stopclaude_ends_mode_when_no_process_running(monkeypatch, tmp_path):
+    monkeypatch.setattr(plugin, "_state_path", lambda: tmp_path / "state.json")
+    monkeypatch.setattr(plugin, "_session_key", lambda event=None, gateway=None: "telegram:chat:user")
+    (tmp_path / "state.json").write_text(json.dumps({"telegram:chat:user": {"active": True, "session_id": "sid-123"}}))
+    monkeypatch.setattr(
+        plugin,
+        "stop_claude_relay_process",
+        lambda session_key: {"success": False, "stopped": False, "error": "No running Claude relay process for this chat."},
+    )
+
+    result = await plugin._handle_stopclaude_async()
+
+    assert "No running Claude relay process" in result
+    assert "Claude mode ended" in result
+    entry = json.loads((tmp_path / "state.json").read_text())["telegram:chat:user"]
+    assert entry["active"] is False
+
+
 def test_pre_gateway_dispatch_rewrites_plain_text_when_active(monkeypatch, tmp_path):
     monkeypatch.setattr(plugin, "_state_path", lambda: tmp_path / "state.json")
     (tmp_path / "state.json").write_text(json.dumps({"key": {"active": True}}))

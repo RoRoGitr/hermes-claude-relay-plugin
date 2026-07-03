@@ -17,6 +17,7 @@ try:
         RELAY_TO_CLAUDE_SCHEMA,
         check_requirements,
         relay_to_claude,
+        stop_claude_relay_process,
     )
 except ImportError:  # Allows pytest to import this plugin root as a top-level __init__.py.
     from relay import (  # type: ignore
@@ -24,6 +25,7 @@ except ImportError:  # Allows pytest to import this plugin root as a top-level _
         RELAY_TO_CLAUDE_SCHEMA,
         check_requirements,
         relay_to_claude,
+        stop_claude_relay_process,
     )
 
 logger = logging.getLogger(__name__)
@@ -253,6 +255,7 @@ async def _handle_claude_async(raw_args: str) -> str:
             resume_session_id=sid,
             model=model,
             timeout=args.get("timeout") or DEFAULT_TIMEOUT_SECONDS,
+            session_key=session_key,
         )
         return json.loads(raw) if isinstance(raw, str) else raw
 
@@ -307,11 +310,29 @@ async def _handle_endclaude_async(raw_args: str = "") -> str:
 
 
 async def _handle_stopclaude_async(raw_args: str = "") -> str:
+    session_key = _session_key()
     state = _load_state()
-    entry = state.get(_session_key(), {}) or {}
+    entry = dict(state.get(session_key, {}) or {})
     if not entry.get("active") or not entry.get("session_id"):
         return "Claude mode is not active for this chat."
-    return await _handle_claude_async("--once --timeout 300 /stop")
+
+    try:
+        payload = stop_claude_relay_process(session_key)
+    except Exception as exc:
+        logger.warning("Claude relay stop failed: %s", exc)
+        return f"Claude relay stop failed: {exc}"
+
+    entry["active"] = False
+    entry["ended_at"] = datetime.now().isoformat(timespec="seconds")
+    state[session_key] = entry
+    _save_state(state)
+
+    if payload.get("stopped"):
+        pid = payload.get("pid")
+        suffix = f" (pid {pid})" if pid else ""
+        return f"Claude relay process stopped{suffix}. Claude mode ended for this chat."
+    err = payload.get("error") or "No running Claude relay process for this chat."
+    return f"{err} Claude mode ended for this chat."
 
 
 async def _handle_claudemodel_async(raw_args: str = "") -> str:

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -17,6 +18,75 @@ DEFAULT_PROJECT_ROOT = os.getenv(
 )
 DEFAULT_TIMEOUT_SECONDS = 1800
 MAX_TIMEOUT_SECONDS = 3600
+
+RUNNING_CLAUDE_PROCS: dict[str, subprocess.Popen] = {}
+RUNNING_CLAUDE_PROCS_LOCK = threading.RLock()
+
+
+def register_running_proc(session_key: Optional[str], proc: subprocess.Popen) -> None:
+    if not session_key:
+        return
+    with RUNNING_CLAUDE_PROCS_LOCK:
+        RUNNING_CLAUDE_PROCS[session_key] = proc
+
+
+def clear_running_proc(session_key: Optional[str], proc: subprocess.Popen) -> None:
+    if not session_key:
+        return
+    with RUNNING_CLAUDE_PROCS_LOCK:
+        if RUNNING_CLAUDE_PROCS.get(session_key) is proc:
+            RUNNING_CLAUDE_PROCS.pop(session_key, None)
+
+
+def kill_process_tree(proc: subprocess.Popen) -> bool:
+    if proc.poll() is not None:
+        return False
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        return True
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except Exception:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    return True
+
+
+def stop_claude_relay_process(session_key: str) -> dict:
+    with RUNNING_CLAUDE_PROCS_LOCK:
+        proc = RUNNING_CLAUDE_PROCS.pop(session_key, None)
+    if proc is None or proc.poll() is not None:
+        return {
+            "success": False,
+            "stopped": False,
+            "error": "No running Claude relay process for this chat.",
+        }
+    pid = proc.pid
+    stopped = kill_process_tree(proc)
+    return {"success": bool(stopped), "stopped": bool(stopped), "pid": pid}
 
 
 def resolve_claude_binary() -> Optional[str]:
@@ -55,6 +125,7 @@ def relay_to_claude(
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
     agent=None,
     task_id: Optional[str] = None,
+    session_key: Optional[str] = None,
 ) -> str:
     """Run `claude -p` and return a JSON envelope."""
     if not prompt or not prompt.strip():
@@ -93,6 +164,12 @@ def relay_to_claude(
     env = dict(os.environ)
     env.setdefault("CLAUDE_CONFIG_DIR", os.path.expanduser(r"~\Claude\.claude"))
 
+    popen_kwargs = {}
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        popen_kwargs["start_new_session"] = True
+
     start = time.monotonic()
     proc = subprocess.Popen(
         cmd,
@@ -103,7 +180,9 @@ def relay_to_claude(
         text=True,
         encoding="utf-8",
         errors="replace",
+        **popen_kwargs,
     )
+    register_running_proc(session_key, proc)
 
     try:
         from tools.environments.base import touch_activity_if_due
@@ -123,15 +202,18 @@ def relay_to_claude(
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        kill_process_tree(proc)
         try:
             proc.communicate(timeout=10)
         except Exception:
             pass
+        clear_running_proc(session_key, proc)
         return json.dumps(
             {"success": False, "error": f"Claude relay timed out after {timeout}s.", "workdir": workdir},
             ensure_ascii=False,
         )
+    finally:
+        clear_running_proc(session_key, proc)
 
     elapsed = round(time.monotonic() - start, 1)
 
